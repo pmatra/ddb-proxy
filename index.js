@@ -6,6 +6,7 @@ const CONFIG = require("./config.js");
 const authentication = require("./auth.js");
 
 const filterModifiers = require("./filterModifiers.js");
+const lookup = require("./lookup.js");
 
 const spells = require("./spells.js");
 const character = require("./character.js");
@@ -16,8 +17,19 @@ const campaign = require("./campaign.js");
 const app = express();
 const port = process.env.PORT || 3000;
 
+var corsOptions = {
+    origin: '*',
+    optionsSuccessStatus: 200 // For legacy browser support
+}
+
+app.use(cors(corsOptions));
+
+/**
+ * A simple ping to tell if the proxy is running
+ */
+app.get("/ping", cors(), (req, res) => res.send("pong"));
+
 const authPath = ["/proxy/auth"];
-app.options(authPath, cors(), (req, res) => res.status(200).send());
 app.post(authPath, cors(), express.json(), (req, res) => {
   if (!req.body.cobalt || req.body.cobalt == "") return res.json({ success: false, message: "No cobalt token" });
   const cacheId = authentication.getCacheId(req.body.cobalt);
@@ -26,6 +38,26 @@ app.post(authPath, cors(), express.json(), (req, res) => {
     if (!token) return res.json({ success: false, message: "You must supply a valid cobalt value." });
     return res.status(200).json({ success: true, message: "Authenticated." });
   });
+});
+
+const configLookupCall = "/proxy/api/config/json";
+app.get(configLookupCall, cors(), express.json(), (req, res) => {
+
+  lookup
+    .getConfig()
+    .then((data) => {
+      return res
+        .status(200)
+        .json({ success: true, message: "Config retrieved.", data: data });
+    })
+    .catch((error) => {
+      console.log(error);
+      if (error === "Forbidden") {
+        return res.json({ success: false, message: "Forbidden." });
+      }
+      return res.json({ success: false, message: "Unknown error during config loading: " + error });
+    });
+
 });
 
 /**
@@ -119,8 +151,8 @@ app.post("/proxy/class/spells", cors(), express.json(), (req, res) => {
 /**
  * Attempt to parse the character remotely
  */
-app.options(["/proxy/character","/proxy/v5/character"], cors(), (req, res) => res.status(200).send());
-app.post(["/proxy/character","/proxy/v5/character"], cors(), express.json(), (req, res) => {
+app.options(["/proxy/character", "/proxy/v5/character"], cors(), (req, res) => res.status(200).send());
+app.post(["/proxy/character", "/proxy/v5/character"], cors(), express.json(), (req, res) => {
   // check for cobalt token
   const cobalt = req.body.cobalt;
 
@@ -207,16 +239,15 @@ app.post(getMonsterProxyRoutes, cors(), express.json(), (req, res) => {
 
   const homebrew = req.body.homebrew ? req.body.homebrew : false;
   const homebrewOnly = req.body.homebrewOnly ? req.body.homebrewOnly : false;
+  const excludeLegacy = req.body.excludeLegacy ? req.body.excludeLegacy : false;
 
   const exactNameMatch = req.body.exactMatch || false;
   const performExactMatch = exactNameMatch && searchTerm && searchTerm !== "";
 
   const sources = req.body.sources || [];
-  console.log(sources);
 
   const hash = crypto.createHash("sha256");
   hash.update(cobalt + searchTerm);
-
   const cacheId = hash.digest("hex");
 
   authentication.getBearerToken(cacheId, cobalt).then((token) => {
@@ -225,6 +256,14 @@ app.post(getMonsterProxyRoutes, cors(), express.json(), (req, res) => {
     monsters
       .extractMonsters(cacheId, searchTerm, homebrew, homebrewOnly, sources)
       .then((data) => {
+        if (excludeLegacy) {
+          const filteredMonsters = data.filter((monster) => !monster.isHomebrew && !monster.isLegacy);
+          return filteredMonsters;
+        } else {
+          return data;
+        }
+      })
+      .then((data) => {
         if (performExactMatch) {
           const filteredMonsters = data.filter((monster) => monster.name.toLowerCase() === search.toLowerCase());
           return filteredMonsters;
@@ -232,6 +271,48 @@ app.post(getMonsterProxyRoutes, cors(), express.json(), (req, res) => {
           return data;
         }
       })
+      .then((data) => {
+        return res
+          .status(200)
+          .json({ success: true, message: "All available monsters successfully received.", data: data });
+      })
+      .catch((error) => {
+        console.log(error);
+        if (error === "Forbidden") {
+          return res.json({ success: false, message: "You must supply a valid cobalt value." });
+        }
+        return res.json({ success: false, message: "Unknown error during monster loading: " + error });
+      });
+  });
+});
+
+/**
+ * Return RAW monster data from DDB
+ */
+const getMonsterIdsProxyRoutes = ["/proxy/monstersById", "/proxy/monsters/ids"];
+app.options(getMonsterIdsProxyRoutes, cors(), (req, res) => res.status(200).send());
+app.post(getMonsterIdsProxyRoutes, cors(), express.json(), (req, res) => {
+  // check for cobalt token
+  const cobalt = req.body.cobalt;
+  if (!cobalt || cobalt == "") return res.json({ success: false, message: "No cobalt token" });
+
+  const ids = req.body.ids;
+  if (!ids) {
+    return res.json({
+      success: false,
+      message: "Please supply required monster ids.",
+    });
+  }
+
+  const hash = crypto.createHash("sha256");
+  hash.update(cobalt + ids.join("-"));
+  const cacheId = hash.digest("hex");
+
+  authentication.getBearerToken(cacheId, cobalt).then((token) => {
+    if (!token) return res.json({ success: false, message: "You must supply a valid cobalt value." });
+
+    monsters
+      .extractMonstersById(cacheId, ids)
       .then((data) => {
         return res
           .status(200)

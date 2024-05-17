@@ -1,5 +1,7 @@
 # ddb-proxy
 
+This Fork has been updated by Peter Matra. Cors has been set to allow all websites
+
 This proxy allows for communication with DDB for use integrating content into Foundry VTT.
 
 It provides the following backend functionality for [ddb-importer](https://github.com/MrPrimate/ddb-importer)
